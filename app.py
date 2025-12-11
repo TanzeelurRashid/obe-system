@@ -18,7 +18,7 @@ if DATABASE_URL:
 else:
     import sqlite3
     DB_TYPE = "SQLITE"
-    DB_FILE = "obe_system_v18.db"
+    DB_FILE = "obe_system_v19.db"
 
 # --- 2. CONFIGURATION ---
 st.set_page_config(page_title="OBE Compliance Portal", layout="wide", page_icon="🎓")
@@ -188,8 +188,7 @@ if role == "Public View":
         
         if sel_label != "All Courses":
             df_show = df[df['label'] == sel_label].copy()
-            # Strict CLO Sort in Pandas to be double sure
-            df_show = df_show.sort_values('clo_id')
+            df_show = df_show.sort_values('clo_id') # Ensure Sort
             n = len(df_show)
             if 3 <= n <= 6: st.success(f"✅ Compliant ({n} CLOs)")
             else: st.error(f"❌ Non-Compliant ({n} CLOs). Target: 3-6.")
@@ -254,16 +253,17 @@ elif role == "Faculty Editor":
                 st.error("Deletion Request Sent.")
 
 # =======================================================
-# VIEW 3: ADMIN (Sorted)
+# VIEW 3: ADMIN (Sorted + DELETE TAB)
 # =======================================================
 elif role == "Admin Dashboard":
     st.title("🔐 Admin Dashboard")
     if st.sidebar.text_input("Password", type="password") == ADMIN_PASSWORD:
-        t1, t2, t3, t4 = st.tabs(["⚡ Live Editor", "➕ Create Course", "📥 Upload", "⚖️ Approvals"])
+        # FIVE TABS: Live Edit | Create | Delete | Upload | Approvals
+        t1, t2, t3, t4, t5 = st.tabs(["⚡ Live Editor", "➕ Create Course", "🗑️ Delete Course", "📥 Upload", "⚖️ Approvals"])
         
+        # 1. LIVE EDITOR
         with t1:
-            st.info("Hover over row numbers to delete.")
-            # SORTED QUERY
+            st.info("Hover over row numbers to delete rows individually.")
             df_live = run_query("SELECT * FROM inventory ORDER BY course_code, clo_id", fetch=True)
             if df_live is None: df_live = pd.DataFrame()
             edited_df = st.data_editor(df_live, num_rows="dynamic", use_container_width=True, hide_index=True, key="editor")
@@ -278,6 +278,7 @@ elif role == "Admin Dashboard":
                 time.sleep(0.5)
                 st.rerun()
 
+        # 2. CREATE COURSE
         with t2:
             st.subheader("Add New Course")
             c1, c2, c3, c4 = st.columns(4)
@@ -303,7 +304,29 @@ elif role == "Admin Dashboard":
                     else: st.error("Fill at least one CLO.")
                 else: st.error("Code and Subject required.")
 
+        # 3. DELETE COURSE (THE REQUESTED TAB)
         with t3:
+            st.subheader("Delete Entire Course")
+            st.warning("⚠️ This action will permanently remove the course and ALL its CLOs.")
+            
+            # Fetch Courses
+            df_courses = run_query("SELECT DISTINCT course_code, subject FROM inventory ORDER BY course_code", fetch=True)
+            
+            if df_courses is None or df_courses.empty:
+                st.info("No courses to delete.")
+            else:
+                df_courses['label'] = df_courses['course_code'] + " : " + df_courses['subject']
+                del_target = st.selectbox("Select Course to Remove:", df_courses['label'].unique())
+                
+                if st.button("🗑️ DELETE COURSE"):
+                    code_to_del = del_target.split(" : ")[0]
+                    run_query("DELETE FROM inventory WHERE course_code = ?", (code_to_del,))
+                    st.success(f"Successfully deleted {code_to_del} and all its CLOs.")
+                    time.sleep(1)
+                    st.rerun()
+
+        # 4. UPLOAD
+        with t4:
             f = st.file_uploader("Upload Inventory", type=['xlsx', 'csv'])
             if f and st.button("Process & Replace"):
                 df_clean = smart_parse_file(f)
@@ -316,7 +339,8 @@ elif role == "Admin Dashboard":
                             r.get('sgds',''), r.get('ec',''), r.get('notes','')))
                     st.success("Database Reset!")
 
-        with t4:
+        # 5. APPROVALS
+        with t5:
             drafts = run_query("SELECT * FROM drafts", fetch=True)
             if drafts is None or drafts.empty:
                 st.info("No pending tasks.")
