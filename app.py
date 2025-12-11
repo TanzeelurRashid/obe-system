@@ -1,12 +1,12 @@
+from dotenv import load_dotenv
+load_dotenv()  # This loads the .env file you just created
 import streamlit as st
 import pandas as pd
 import os
 import time
 
-# --- 1. SMART DATABASE CONNECTION (Universal) ---
+# --- 1. SMART DATABASE CONNECTION ---
 DATABASE_URL = None
-
-# Check Environment Variables (Render/Railway/Streamlit Cloud)
 if "DATABASE_URL" in os.environ:
     DATABASE_URL = os.environ["DATABASE_URL"]
 elif hasattr(st, "secrets") and "DATABASE_URL" in st.secrets:
@@ -18,13 +18,13 @@ if DATABASE_URL:
 else:
     import sqlite3
     DB_TYPE = "SQLITE"
-    DB_FILE = "obe_system_final.db"
+    DB_FILE = "obe_system_v18.db"
 
 # --- 2. CONFIGURATION ---
 st.set_page_config(page_title="OBE Compliance Portal", layout="wide", page_icon="🎓")
 ADMIN_PASSWORD = "123"
 
-# STANDARD LISTS
+# LISTS
 PLOS = [f"PLO-{i}" for i in range(1, 13)]
 BLOOMS = ([f"C{i}" for i in range(1, 7)] + [f"P{i}" for i in range(1, 8)] + [f"A{i}" for i in range(1, 6)])
 WKS = [f"WK{i}" for i in range(1, 9)]
@@ -54,22 +54,17 @@ def get_db_connection():
 def run_query(query, params=(), fetch=False):
     conn = get_db_connection()
     c = conn.cursor()
-    
-    # ADAPTER: Convert SQLite '?' placeholder to Postgres '%s'
     if DB_TYPE == "POSTGRES":
         query = query.replace("?", "%s")
         query = query.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
         query = query.replace("DATETIME DEFAULT CURRENT_TIMESTAMP", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-    
     try:
         c.execute(query, params)
         if fetch:
-            if c.description: # Safety check for empty results
+            if c.description:
                 cols = [desc[0] for desc in c.description]
-                data = c.fetchall()
-                result = pd.DataFrame(data, columns=cols)
-            else:
-                result = pd.DataFrame()
+                result = pd.DataFrame(c.fetchall(), columns=cols)
+            else: result = pd.DataFrame()
         else:
             conn.commit()
             result = None
@@ -146,20 +141,16 @@ def smart_parse_file(uploaded_file):
             elif 'complexity' in cl or 'ec' in cl: col_map[c] = 'ec'
             elif 'note' in cl: col_map[c] = 'notes'
         df = df.rename(columns=col_map)
-        
         if 'subject' in df.columns: df['subject'] = df['subject'].ffill()
         if 'course_code' in df.columns and 'subject' in df.columns:
             df['course_code'] = df.groupby('subject')['course_code'].ffill().fillna("MISSING")
-        
         if 'clo_id' in df.columns:
             df = df.dropna(subset=['clo_id'])
             df = df[df['clo_id'].astype(str).str.contains("CLO", case=False, na=False)]
-        
         fill_cols = ['kp', 'sgds', 'ec', 'theory_lab', 'credit_hours', 'bloom', 'notes']
         for col in fill_cols:
             if col in df.columns:
                 df[col] = df.groupby('course_code')[col].ffill()
-
         df = df.fillna("")
         df = df.drop_duplicates(subset=['course_code', 'clo_id', 'statement'])
         return df
@@ -172,19 +163,22 @@ init_db()
 
 st.sidebar.title("🎓 OBE System")
 if DB_TYPE == "POSTGRES":
-    st.sidebar.success("☁️ Cloud DB Connected")
+    st.sidebar.success("☁️ Cloud DB Active")
 else:
-    st.sidebar.warning("💻 Local Database")
+    st.sidebar.warning("💻 Local DB Active")
 
 role = st.sidebar.radio("Navigation", ["Public View", "Faculty Editor", "Admin Dashboard"])
 
-# VIEW 1: PUBLIC
+# =======================================================
+# VIEW 1: PUBLIC (Sorted)
+# =======================================================
 if role == "Public View":
     st.title("📘 Approved Curriculum")
-    if st.button("🔄 Refresh Data"):
-        st.rerun()
-
-    df = run_query("SELECT * FROM inventory", fetch=True)
+    if st.button("🔄 Refresh"): st.rerun()
+    
+    # SORTED QUERY
+    df = run_query("SELECT * FROM inventory ORDER BY course_code, clo_id", fetch=True)
+    
     if df is None or df.empty:
         st.warning("⚠️ Database empty.")
     else:
@@ -194,11 +188,11 @@ if role == "Public View":
         
         if sel_label != "All Courses":
             df_show = df[df['label'] == sel_label].copy()
+            # Strict CLO Sort in Pandas to be double sure
+            df_show = df_show.sort_values('clo_id')
             n = len(df_show)
-            if 3 <= n <= 6:
-                st.success(f"✅ Compliant ({n} CLOs)")
-            else:
-                st.error(f"❌ Non-Compliant ({n} CLOs). Target: 3-6.")
+            if 3 <= n <= 6: st.success(f"✅ Compliant ({n} CLOs)")
+            else: st.error(f"❌ Non-Compliant ({n} CLOs). Target: 3-6.")
         else:
             df_show = df.copy()
 
@@ -207,10 +201,12 @@ if role == "Public View":
         final_df = df_show[[c for c in cols.keys() if c in df_show.columns]].rename(columns=cols)
         st.dataframe(final_df, hide_index=True, use_container_width=True)
 
-# VIEW 2: FACULTY
+# =======================================================
+# VIEW 2: FACULTY (Sorted)
+# =======================================================
 elif role == "Faculty Editor":
     st.title("🛠️ Faculty Editor")
-    df = run_query("SELECT * FROM inventory", fetch=True)
+    df = run_query("SELECT * FROM inventory ORDER BY course_code, clo_id", fetch=True)
     if df is None or df.empty:
         st.info("No data.")
     else:
@@ -239,11 +235,10 @@ elif role == "Faculty Editor":
                     except: i=0
                     new_bloom = st.selectbox("Bloom", BLOOMS, index=i)
                 with c3: new_kp = st.selectbox("KP", [""]+WKS, index=0 if not row['kp'] in WKS else WKS.index(row['kp'])+1)
-                
                 c4, c5 = st.columns(2)
                 with c4: new_sgd = st.selectbox("SGD", [""]+SDGS, index=0 if not row['sgds'] in SDGS else SDGS.index(row['sgds'])+1)
                 with c5: new_ec = st.selectbox("EC", [""]+ECS, index=0 if not row['ec'] in ECS else ECS.index(row['ec'])+1)
-                new_note = st.text_area("Internal Notes (Hidden from Public)", row['notes'])
+                new_note = st.text_area("Internal Notes", row['notes'])
                 
                 if st.form_submit_button("Submit Request"):
                     run_query("""INSERT INTO drafts (inv_id, course_code, subject, clo_id, new_statement, new_plo, new_bloom, new_kp, new_sgds, new_ec, new_notes, request_type, requester) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", 
@@ -258,7 +253,9 @@ elif role == "Faculty Editor":
                           (int(r['id']), r['course_code'], r['subject'], r['clo_id'], 'DELETE', "Faculty"))
                 st.error("Deletion Request Sent.")
 
-# VIEW 3: ADMIN
+# =======================================================
+# VIEW 3: ADMIN (Sorted)
+# =======================================================
 elif role == "Admin Dashboard":
     st.title("🔐 Admin Dashboard")
     if st.sidebar.text_input("Password", type="password") == ADMIN_PASSWORD:
@@ -266,7 +263,8 @@ elif role == "Admin Dashboard":
         
         with t1:
             st.info("Hover over row numbers to delete.")
-            df_live = run_query("SELECT * FROM inventory", fetch=True)
+            # SORTED QUERY
+            df_live = run_query("SELECT * FROM inventory ORDER BY course_code, clo_id", fetch=True)
             if df_live is None: df_live = pd.DataFrame()
             edited_df = st.data_editor(df_live, num_rows="dynamic", use_container_width=True, hide_index=True, key="editor")
             if st.button("💾 SAVE CHANGES"):
